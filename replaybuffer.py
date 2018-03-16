@@ -1,19 +1,13 @@
-
-# coding: utf-8
-
-# In[ ]:
-
+"""
+Replay Buffer 
+Author: Sameera Lanka
+Website: https://sameera-lanka.com
+"""
 
 import random
 from collections import deque
 MINIBATCH_SIZE = 64
 
-
-
-# In[ ]:
-
-
-# 'TimeStep', ['step_type', 'reward', 'discount', 'observation']
 class Buffer:
     def __init__(self, buffer_size):
         self.limit = buffer_size
