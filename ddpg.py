@@ -9,17 +9,19 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import torch.optim as optim
+import torch.nn.functional as F
 
 
 # Lib
+import gym
 import numpy as np
 import random
 from copy import deepcopy
-from dm_control import suite
+#from dm_control import suite
 import matplotlib.pyplot as plt
-get_ipython().magic(u'matplotlib inline')
+#get_ipython().magic(u'matplotlib inline')
 #from IPython.display import clear_output
-from IPython import display
+#from IPython import display
 import os
 
 # Files
@@ -28,15 +30,15 @@ from replaybuffer import Buffer
 from actorcritic import Actor, Critic
 
 # Hyperparameters
-ACTOR_LR = 0.0001
+ACTOR_LR = 0.0005
 CRITIC_LR = 0.001
 MINIBATCH_SIZE = 64
-NUM_EPISODES = 10000
+NUM_EPISODES = 20
 MU = 0
 SIGMA = 0.2
-CHECKPOINT_DIR = './checkpoints/manipulator/'
-BUFFER_SIZE = 1000000
-DISCOUNT = 0.9
+CHECKPOINT_DIR = 'Github/DDPG-PyTorch'
+BUFFER_SIZE = 100000
+DISCOUNT = 0.99
 TAU = 0.001
 WARMUP = 70
 EPSILON = 1.0
@@ -59,12 +61,14 @@ def obs2state(observation):
 class DDPG:
     def __init__(self, env):
         self.env = env
-        self.stateDim = obs2state(env.reset().observation).size()[1]
-        self.actionDim = env.action_spec().shape[0]
-        self.actor = Actor(self.env).cuda()
-        self.critic = Critic(self.env).cuda()
-        self.targetActor = deepcopy(Actor(self.env)).cuda()
-        self.targetCritic = deepcopy(Critic(self.env)).cuda()
+        #self.stateDim = obs2state(env.reset().observation).size()[1]
+        #self.actionDim = env.action_spec().shape[0]
+        self.stateDim = env.observation_space.shape[0]
+        self.actionDim = env.action_space.shape[0]
+        self.actor = Actor(self.env)
+        self.critic = Critic(self.env)
+        self.targetActor = deepcopy(Actor(self.env))
+        self.targetCritic = deepcopy(Critic(self.env))
         self.actorOptim = optim.Adam(self.actor.parameters(), lr=ACTOR_LR)
         self.criticOptim = optim.Adam(self.critic.parameters(), lr=CRITIC_LR)
         self.criticLoss = nn.MSELoss()
@@ -87,17 +91,17 @@ class DDPG:
             using the target actor and target critic
            Outputs: Batch of Q-value targets"""
         
-        targetBatch = torch.FloatTensor(rewardBatch).cuda() 
+        targetBatch = torch.FloatTensor(rewardBatch)
         nonFinalMask = torch.ByteTensor(tuple(map(lambda s: s != True, terminalBatch)))
         nextStateBatch = torch.cat(nextStateBatch)
         nextActionBatch = self.targetActor(nextStateBatch)
-        nextActionBatch.volatile = True
+        nextActionBatch.volatile = False
         qNext = self.targetCritic(nextStateBatch, nextActionBatch)  
         
-        nonFinalMask = self.discount * nonFinalMask.type(torch.cuda.FloatTensor)
+        nonFinalMask = self.discount * nonFinalMask.type(torch.FloatTensor)
         targetBatch += nonFinalMask * qNext.squeeze().data
         
-        return Variable(targetBatch, volatile=False)
+        return Variable(targetBatch, volatile = False)
 
     
     def updateTargets(self, target, original):
@@ -114,10 +118,10 @@ class DDPG:
         """Inputs: Current state of the episode
             Returns the action which maximizes the Q-value of the current state-action pair"""
         
-        spec = self.env.action_spec()
-        minAct = Variable(torch.cuda.FloatTensor(spec.minimum), requires_grad=False)
-        maxAct = Variable(torch.cuda.FloatTensor(spec.maximum), requires_grad=False)  
-        noise = self.epsilon * Variable(torch.FloatTensor(self.noise()), volatile=True).cuda()
+        #spec = self.env.action_spec()
+        #minAct = Variable(torch.FloatTensor(spec.minimum), requires_grad=False)
+        #maxAct = Variable(torch.FloatTensor(spec.maximum), requires_grad=False)  
+        noise = self.epsilon * Variable(torch.FloatTensor(self.noise()), volatile=False)
         action = self.actor(curState)
         actionNoise = action + noise
         return actionNoise
@@ -132,29 +136,36 @@ class DDPG:
         for i in range(self.start, self.end):
             time_step = self.env.reset()  
             ep_reward = 0
+            step = 0
+            begins = True
             
-            while not time_step.last():
+            while True:
                 
                 #Visualize Training
-                display.clear_output(wait=True)
-                plt.imshow(self.env.physics.render())
-                plt.show()
+                #display.clear_output(wait=True)
+                if (i % 5 == 0) :
+                    self.env.render()
+                #plt.show()
              
                 # Get maximizing action
-                curState = Variable(obs2state(time_step.observation), volatile=True).cuda()
+                if begins:
+                    curState = Variable(torch.FloatTensor(time_step).view(1, -1), volatile = False)
+                    begins = False
+                else :
+                    curState = Variable(torch.FloatTensor(time_step[0]).view(1, -1), volatile = False)
                 self.actor.eval()     
                 action = self.getMaxAction(curState)
-                curState.volatile = False
+                #curState.volatile = False
                 action.volatile = False
                 self.actor.train()
                 
                 # Step episode
                 time_step = self.env.step(action.data)
-                nextState = Variable(obs2state(time_step.observation), volatile=True).cuda()
-                reward = time_step.reward
+                nextState = Variable(torch.FloatTensor(time_step[0]).view(1, -1))
+                reward = time_step[1]
                 ep_reward += reward
-                terminal = time_step.last()
-                
+                terminal = time_step[2]
+                step += 1
                 # Update replay bufer
                 self.replayBuffer.append((curState, action, nextState, reward, terminal))
                 
@@ -165,29 +176,34 @@ class DDPG:
                     rewardBatch, terminalBatch = self.replayBuffer.sample_batch(self.batchSize)
                     curStateBatch = torch.cat(curStateBatch)
                     actionBatch = torch.cat(actionBatch)
-                    
-                    qPredBatch = self.critic(curStateBatch, actionBatch)
+
+                    qPredBatch = self.critic(curStateBatch, actionBatch).reshape(-1)
                     qTargetBatch = self.getQTarget(nextStateBatch, rewardBatch, terminalBatch)
-                    
+
                 # Critic update
                     self.criticOptim.zero_grad()
                     criticLoss = self.criticLoss(qPredBatch, qTargetBatch)
-                    print('Critic Loss: {}'.format(criticLoss))
-                    criticLoss.backward()
+                    #criticLoss = F.smooth_l1_loss(qPredBatch, qTargetBatch)
+                    if step % 5 == 4 :
+                        print('Critic Loss: {}'.format(criticLoss))
+                    criticLoss.backward(retain_graph=True)
                     self.criticOptim.step()
             
                 # Actor update
                     self.actorOptim.zero_grad()
                     actorLoss = -torch.mean(self.critic(curStateBatch, self.actor(curStateBatch)))
-                    print('Actor Loss: {}'. format(actorLoss))
-                    actorLoss.backward()
+                    if step % 5 == 4 :
+                        print('Actor Loss: {}'. format(actorLoss))
+                    actorLoss.backward(retain_graph=True)
                     self.actorOptim.step()
                     
                 # Update Targets                        
                     self.updateTargets(self.targetActor, self.actor)
                     self.updateTargets(self.targetCritic, self.critic)
                     self.epsilon -= self.epsilon_decay
-                    
+
+                if time_step[2] :
+                    break
             if i % 20 == 0:
                 self.save_checkpoint(i)
             self.rewardgraph.append(ep_reward)
