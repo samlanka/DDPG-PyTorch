@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 import torch.optim as optim
 import torch.nn.functional as F
+import math
 
 
 # Lib
@@ -30,19 +31,20 @@ from replaybuffer import Buffer
 from actorcritic import Actor, Critic
 
 # Hyperparameters
-ACTOR_LR = 0.0005
-CRITIC_LR = 0.001
+ACTOR_LR = 0.001
+CRITIC_LR = 0.002
 MINIBATCH_SIZE = 64
-NUM_EPISODES = 20
+NUM_EPISODES = 500
 MU = 0
-SIGMA = 0.2
-CHECKPOINT_DIR = 'Github/DDPG-PyTorch'
-BUFFER_SIZE = 100000
-DISCOUNT = 0.99
+SIGMA = 1
+CHECKPOINT_DIR = 'Github_raw_500/DDPG-PyTorch'
+BUFFER_SIZE = 1000000
+DISCOUNT = 0.999
 TAU = 0.001
-WARMUP = 70
+WARMUP = 70 # >= MINIBATCH_SIZE
 EPSILON = 1.0
-EPSILON_DECAY = 1e-6
+EPSILON_DECAY = 1e-7
+LOGSTEP = 10
 
 
 def obs2state(observation):
@@ -81,6 +83,7 @@ class DDPG:
         self.epsilon = EPSILON
         self.epsilon_decay = EPSILON_DECAY
         self.rewardgraph = []
+        self.stepgraph = []
         self.start = 0
         self.end = NUM_EPISODES
         
@@ -125,8 +128,49 @@ class DDPG:
         action = self.actor(curState)
         actionNoise = action + noise
         return actionNoise
-        
-        
+
+    def play(self, showdata=False):
+        print("Playing started...")
+        for i in range(1):
+            time_step = self.env.reset()
+            step = 0
+            begins = True
+            while True:
+                
+                self.env.render()
+ 
+                # Get maximizing action
+                if begins:
+                    curState = Variable(torch.FloatTensor(time_step).view(1, -1), volatile = False)
+                    begins = False
+                else :
+                    curState = Variable(torch.FloatTensor(time_step[0]).view(1, -1), volatile = False)
+                self.actor.eval()     
+                action = self.getMaxAction(curState)
+                #curState.volatile = False
+                action.volatile = False
+
+                if showdata:
+                    Qsa = self.critic(curState, action)
+                    print("action:", action, " on state:", curState)
+                    print("      with Q(s,a)=", Qsa)
+                    
+                
+                # Step episode
+                time_step = self.env.step(action.data)
+                nextState = Variable(torch.FloatTensor(time_step[0]).view(1, -1))
+                #reward = time_step[1]
+                reward = myreward(time_step)
+                if showdata:
+                    print("    and gets reward: ", reward)
+                
+                terminal = time_step[2]
+                step += 1
+                
+                if terminal :
+                    print("Succeed")
+                    break
+    
     def train(self):
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
@@ -143,7 +187,7 @@ class DDPG:
                 
                 #Visualize Training
                 #display.clear_output(wait=True)
-                if (i % 5 == 0) :
+                if (i % LOGSTEP == 0) :
                     self.env.render()
                 #plt.show()
              
@@ -158,11 +202,19 @@ class DDPG:
                 #curState.volatile = False
                 action.volatile = False
                 self.actor.train()
+
+                if i % LOGSTEP == 0:
+                    Qsa = self.critic(curState, action)
+                    print("action:", action, " on state ", curState)
+                    print("      with Q(s,a)=", Qsa)
+                    
                 
                 # Step episode
                 time_step = self.env.step(action.data)
                 nextState = Variable(torch.FloatTensor(time_step[0]).view(1, -1))
-                reward = time_step[1]
+                #reward = time_step[1]
+                reward = myreward(time_step)
+                
                 ep_reward += reward
                 terminal = time_step[2]
                 step += 1
@@ -184,16 +236,16 @@ class DDPG:
                     self.criticOptim.zero_grad()
                     criticLoss = self.criticLoss(qPredBatch, qTargetBatch)
                     #criticLoss = F.smooth_l1_loss(qPredBatch, qTargetBatch)
-                    if step % 5 == 4 :
-                        print('Critic Loss: {}'.format(criticLoss))
+                    #if step % 5 == 4 :
+                    #    print('Critic Loss: {}'.format(criticLoss))
                     criticLoss.backward(retain_graph=True)
                     self.criticOptim.step()
             
                 # Actor update
                     self.actorOptim.zero_grad()
                     actorLoss = -torch.mean(self.critic(curStateBatch, self.actor(curStateBatch)))
-                    if step % 5 == 4 :
-                        print('Actor Loss: {}'. format(actorLoss))
+                    #if step % 5 == 4 :
+                    #    print('Actor Loss: {}'. format(actorLoss))
                     actorLoss.backward(retain_graph=True)
                     self.actorOptim.step()
                     
@@ -204,8 +256,11 @@ class DDPG:
 
                 if time_step[2] :
                     break
+            print(i, ':', step)
+
             if i % 20 == 0:
                 self.save_checkpoint(i)
+            self.stepgraph.append(step)
             self.rewardgraph.append(ep_reward)
 
 
@@ -221,8 +276,8 @@ class DDPG:
             'criticOpt': self.criticOptim.state_dict(),
             'replayBuffer': self.replayBuffer,
             'rewardgraph': self.rewardgraph,
-            'epsilon': self.epsilon
-            
+            'epsilon': self.epsilon,
+            'stepgraph': self.stepgraph
         } 
         torch.save(checkpoint, checkpointName)
     
@@ -240,7 +295,17 @@ class DDPG:
             self.replayBuffer = checkpoint['replayBuffer']
             self.rewardgraph = checkpoint['rewardgraph']
             self.epsilon = checkpoint['epsilon']
+            self.stepgraph = checkpoint['stepgraph']
             print('Checkpoint loaded')
         else:
             raise OSError('Checkpoint not found')
 
+def myreward(time_step):
+    return time_step[1]
+    next_state, reward, done, _ = time_step
+    position = next_state[0]
+    velocity = next_state[1]
+    r = (3 * position + 2) * 0 + 9.8 * (math.sin(3 * position) + 1) + 0.5 * velocity**2
+    if done:
+        r += 100
+    return torch.tensor([r])
