@@ -5,4 +5,4 @@ This repository contains the code to implement the algorithm in the paper [Conti
 The algorithm presents a method to perform Q-learning in continuous action spaces. The code contains the implementation on
 [DeepMind Control Suite](https://github.com/deepmind/dm_control) simulations.
 
-### BLOGPOST: https://sameera-lanka.com/blog/2018/2/19/deep-deterministic-policy-gradientpytorch-dm-control-suite
+## BLOGPOST: https://sameera-lanka.com/blog/2018/2/19/deep-deterministic-policy-gradientpytorch-dm-control-suite
