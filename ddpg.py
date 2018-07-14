@@ -113,10 +113,7 @@ class DDPG:
     def getMaxAction(self, curState):
         """Inputs: Current state of the episode
             Returns the action which maximizes the Q-value of the current state-action pair"""
-        
-        spec = self.env.action_spec()
-        minAct = Variable(torch.cuda.FloatTensor(spec.minimum), requires_grad=False)
-        maxAct = Variable(torch.cuda.FloatTensor(spec.maximum), requires_grad=False)  
+       
         noise = self.epsilon * Variable(torch.FloatTensor(self.noise()), volatile=True).cuda()
         action = self.actor(curState)
         actionNoise = action + noise
